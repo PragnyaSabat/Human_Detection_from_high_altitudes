@@ -1,0 +1,72 @@
+!pip install sahi
+import torch
+import cv2
+import os
+import numpy as np
+from ultralytics import YOLO
+from sahi.predict import get_sliced_prediction
+from sahi.models.yolov5 import Yolov5DetectionModel
+
+# Define model paths
+model_paths = {
+    "yolov10n": "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov10n.pt",
+    "yolov9t": "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov9t.pt",
+    "yolov8n": "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt"
+}
+
+# Load models
+models = {name: YOLO(path) for name, path in model_paths.items()}
+
+# Set up output directories
+output_folder = "/content/drive/MyDrive/VisDrone2019-DET-train/Fused_output_images"
+os.makedirs(output_folder, exist_ok=True)
+
+# Test images folder
+test_images_folder = "/content/drive/MyDrive/VisDrone2019-DET-train/Test_images"
+
+# Multi-Model Fusion Function
+def fuse_detections(detections_list, iou_thresh=0.5):
+    fused_detections = []
+    for detections in detections_list:
+        for det in detections:
+            if all(iou(det, existing) < iou_thresh for existing in fused_detections):
+                fused_detections.append(det)
+    return fused_detections
+
+# IOU Calculation Function
+def iou(box1, box2):
+    x1, y1, x2, y2 = box1[:4]
+    x1g, y1g, x2g, y2g = box2[:4]
+    xi1, yi1, xi2, yi2 = max(x1, x1g), max(y1, y1g), min(x2, x2g), min(y2, y2g)
+    inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+    box1_area = (x2 - x1) * (y2 - y1)
+    box2_area = (x2g - x1g) * (y2g - y1g)
+    return inter_area / float(box1_area + box2_area - inter_area)
+
+# Process Images
+for img_name in os.listdir(test_images_folder):
+    img_path = os.path.join(test_images_folder, img_name)
+    img = cv2.imread(img_path)
+
+    all_detections = []
+    for name, model in models.items():
+        result = model.predict(img, conf=0.25, iou=0.45)
+        detections = result[0].boxes.data.cpu().numpy()
+        all_detections.append(detections)
+
+    fused_detections = fuse_detections(all_detections)
+
+    for det in fused_detections:
+        x1, y1, x2, y2, conf, cls = map(int, det)
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(img, f"{int(cls)}: {conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+    cv2.imwrite(os.path.join(output_folder, img_name), img)
+
+# Save the model weights instead of the entire model
+for model_name, model in models.items():
+    model_save_path = f"{model_name}_weights.pt"
+    torch.save(model.state_dict(), model_save_path)  # Save model weights
+    print(f"{model_name} weights saved to {model_save_path}")
+
+print(f"\nAll processed images are saved in {output_folder}")
